@@ -1,0 +1,120 @@
+name: Loop integration (operator ↔ LLMBuilder)
+# Runs the full Portfolio-free round-trip on every push:
+#   1. review_target.py reviews a real public target.
+#   2. The produced training JSONL is fed into ARC-Neuron-LLMBuilder's
+#      real scripts/ingest_operator_reviews.py.
+#   3. Assertions: valid schema, valid id, provenance preserved.
+#
+# Red CI here = the contract between gh-ai-operator and LLMBuilder broke.
+# Phase 1 of the Quality Proof Plan (docs/QUALITY_PROOF_PLAN.md).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "53 2 * * *"   # daily at 02:53 UTC (decouples from cloud rate limits)
+
+permissions:
+  contents: read
+
+jobs:
+  round-trip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout operator
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install operator deps
+        working-directory: github_ai_operator
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run live review against a small public target
+        working-directory: github_ai_operator
+        env:
+          GITHUB_TOKEN:       ${{ secrets.GITHUB_TOKEN }}
+          TARGET_URL:         https://github.com/octocat/Hello-World
+          REVIEW_TYPE:        "Full repo review"
+          REVIEW_DEPTH:       quick
+          FOCUS:              "CI loop-integration smoke (ingest round-trip)"
+          EMIT_TRAINING_DATA: "1"
+        run: python review_target.py
+
+      - name: Assert operator produced the expected artifacts
+        working-directory: github_ai_operator
+        run: |
+          test -f output/target_review/*.md            || { echo "[fail] no markdown review"; exit 1; }
+          test -f output/training_export/critique/seed_examples.jsonl || { echo "[fail] no training JSONL"; exit 1; }
+          lines=$(wc -l < output/training_export/critique/seed_examples.jsonl | tr -d ' ')
+          test "$lines" -ge 1 || { echo "[fail] training JSONL empty"; exit 1; }
+          echo "[ok] $lines line(s) in training JSONL"
+
+      - name: Checkout LLMBuilder (to use its real ingest script)
+        uses: actions/checkout@v4
+        with:
+          repository: GareBear99/ARC-Neuron-LLMBuilder
+          path: llmbuilder
+          fetch-depth: 1
+
+      - name: Stage operator artifact into LLMBuilder staging layout
+        run: |
+          mkdir -p llmbuilder/_operator_exports/ci/training_export/critique
+          cp github_ai_operator/output/training_export/critique/seed_examples.jsonl \
+             llmbuilder/_operator_exports/ci/training_export/critique/
+
+      - name: Run LLMBuilder's real ingest script
+        working-directory: llmbuilder
+        run: |
+          python scripts/ingest_operator_reviews.py \
+            --inputs "_operator_exports/**/training_export/critique/*.jsonl" \
+            --strict
+
+      - name: Assert the ingested shard is schema-valid
+        working-directory: llmbuilder
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          path = Path("data/critique/operator_reviews.jsonl")
+          assert path.exists(), f"[fail] ingest did not produce {path}"
+          records = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+          assert records, "[fail] ingested shard is empty"
+          rec = records[0]
+          # Schema contract
+          for k in ("id", "capability", "domain", "difficulty", "input", "target", "tags"):
+              assert k in rec, f"[fail] missing {k}"
+          assert rec["capability"] == "critique"
+          assert rec["domain"] == "code"
+          assert rec["difficulty"] in {"easy", "medium", "hard"}
+          assert "task" in rec["input"]
+          assert "analysis" in rec["target"]
+          conf = rec["target"].get("confidence")
+          assert isinstance(conf, (int, float)) and 0.0 <= conf <= 1.0, f"[fail] bad confidence {conf}"
+          # Provenance + tags
+          assert "arc-operator" in rec["tags"]
+          prov = rec.get("provenance", {})
+          assert prov.get("source", "").endswith("gh-ai-operator"), f"[fail] provenance.source = {prov.get('source')!r}"
+          assert prov.get("emitted_at"), "[fail] missing provenance.emitted_at"
+          assert prov.get("target_url", "").startswith("https://github.com/"), "[fail] missing/invalid provenance.target_url"
+          print(f"[ok] round-trip verified: 1 record, verdict={rec['target'].get('verdict')!r}, id={rec['id']}")
+          PY
+
+      - name: Upload proof artifact (loop manifest)
+        uses: actions/upload-artifact@v4
+        with:
+          name: loop-integration-proof
+          path: |
+            github_ai_operator/output/target_review/*.md
+            github_ai_operator/output/training_export/critique/*.jsonl
+            llmbuilder/data/critique/operator_reviews.jsonl
+          retention-days: 14
