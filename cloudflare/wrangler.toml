@@ -1,0 +1,12 @@
+name = "arc-ai-operator"
+main = "worker.js"
+compatibility_date = "2026-04-01"
+
+# No bindings other than secrets — secrets are set with:
+#   wrangler secret put GITHUB_DISPATCH_TOKEN   # required
+#   wrangler secret put WORKER_SHARED_SECRET    # optional
+
+# Minimum worker permissions: no KV, no R2, no D1 — this is a pure proxy.
+
+[observability]
+enabled = true

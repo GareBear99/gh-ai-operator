@@ -94,12 +94,16 @@ jobs:
           # Portfolio repo. Falls back to GITHUB_TOKEN if the PAT isn't set,
           # in which case review_target.py will still produce the artifact
           # but the comment post-back will fail gracefully.
-          GITHUB_TOKEN:     ${{ secrets.PORTFOLIO_WRITE_TOKEN || secrets.GITHUB_TOKEN }}
-          TARGET_URL:       ${{ steps.vars.outputs.target }}
-          PORTFOLIO_ISSUE:  ${{ steps.vars.outputs.issue }}
-          REVIEW_TYPE:      ${{ steps.vars.outputs.rtype }}
-          REVIEW_DEPTH:     ${{ steps.vars.outputs.depth }}
-          FOCUS:            ${{ steps.vars.outputs.focus }}
+          GITHUB_TOKEN:          ${{ secrets.PORTFOLIO_WRITE_TOKEN || secrets.GITHUB_TOKEN }}
+          TARGET_URL:            ${{ steps.vars.outputs.target }}
+          PORTFOLIO_ISSUE:       ${{ steps.vars.outputs.issue }}
+          REVIEW_TYPE:           ${{ steps.vars.outputs.rtype }}
+          REVIEW_DEPTH:          ${{ steps.vars.outputs.depth }}
+          FOCUS:                 ${{ steps.vars.outputs.focus }}
+          # Cloudflare Workers AI (top-priority LLM backend when both are set).
+          # Heuristic review still runs if these are absent.
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: python review_target.py
 
       - name: Upload review artifact

@@ -94,6 +94,30 @@ def test_render_markdown_contains_verdict_and_footer() -> None:
     assert 'Follow-up' in body
 
 
+def test_cloudflare_provider_registered_and_top_priority() -> None:
+    from github_ai_operator import free_llm_client
+    names = [p.name for p in free_llm_client.PROVIDERS]
+    assert 'Cloudflare Workers AI' in names
+    assert names[0] == 'Cloudflare Workers AI', 'CF should be top priority'
+    cf = next(p for p in free_llm_client.PROVIDERS if p.name == 'Cloudflare Workers AI')
+    assert cf.api_key_env == 'CLOUDFLARE_API_TOKEN'
+    assert cf.required_env == ['CLOUDFLARE_ACCOUNT_ID']
+    assert '{CLOUDFLARE_ACCOUNT_ID}' in cf.api_url
+    resolved = cf.api_url.format(CLOUDFLARE_ACCOUNT_ID='acc123')
+    assert 'api.cloudflare.com' in resolved
+    assert '/accounts/acc123/ai/v1/chat/completions' in resolved
+
+
+def test_cloudflare_skipped_when_account_id_missing(monkeypatch) -> None:
+    import os
+    from github_ai_operator import free_llm_client
+    monkeypatch.setenv('CLOUDFLARE_API_TOKEN', 'fake')
+    monkeypatch.delenv('CLOUDFLARE_ACCOUNT_ID', raising=False)
+    cf = next(p for p in free_llm_client.PROVIDERS if p.name == 'Cloudflare Workers AI')
+    missing = any(not os.getenv(v) for v in cf.required_env)
+    assert missing, 'without CLOUDFLARE_ACCOUNT_ID the CF provider must be skipped'
+
+
 def test_render_markdown_handles_error() -> None:
     body = review_target.render_markdown(
         {'kind': 'repo', 'url': 'https://github.com/x/y', 'owner': 'x', 'repo': 'y', 'pr': None},

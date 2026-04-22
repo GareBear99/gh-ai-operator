@@ -6,21 +6,29 @@ free_llm_client.py — Free/open LLM backends for code review intelligence.
 Provider priority (tried in order based on which keys are present):
 
   KEYED (faster, smarter):
-  1. Groq         — GROQ_API_KEY        — Llama 3.1 70B, free tier, groq.com
-  2. Together AI  — TOGETHER_API_KEY    — Qwen 2.5 Coder 72B, free credit, together.ai
-  3. Mistral      — MISTRAL_API_KEY     — Codestral, free tier, mistral.ai
-  4. Cerebras     — CEREBRAS_API_KEY    — Llama 3.1 70B, free tier, inference.cerebras.ai
+  1. Cloudflare Workers AI — CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+                           — Llama-3.3 70B (fp8-fast) on Cloudflare's edge.
+                             Free tier: ~10,000 neurons/day, no credit card.
+                             OpenAI-compatible endpoint.
+  2. Groq         — GROQ_API_KEY        — Llama 3.1 70B, free tier, groq.com
+  3. Together AI  — TOGETHER_API_KEY    — Qwen 2.5 Coder 72B, free credit, together.ai
+  4. Mistral      — MISTRAL_API_KEY     — Codestral, free tier, mistral.ai
+  5. Cerebras     — CEREBRAS_API_KEY    — Llama 3.1 70B, free tier, inference.cerebras.ai
 
   LOCAL (no key, needs hardware):
-  5. Ollama       — no key, needs `ollama serve` running locally
-  6. LM Studio    — no key, needs LM Studio running locally
+  6. Ollama       — no key, needs `ollama serve` running locally
+  7. LM Studio    — no key, needs LM Studio running locally
 
   ZERO-KEY PUBLIC FALLBACK (no key, no hardware, always available):
-  7. Hugging Face Serverless Inference — no key needed for public models,
+  8. Hugging Face Serverless Inference — no key needed for public models,
      rate limited but always reachable. Uses Mistral-7B-Instruct by default.
      Good enough to write a real review. Not as smart as 70B but not a template.
 
 Setup (any one is enough):
+  # Cloudflare Workers AI (recommended — no credit card, generous free tier):
+  export CLOUDFLARE_ACCOUNT_ID=<your-account-id>
+  export CLOUDFLARE_API_TOKEN=<token-with-Workers-AI:Read-and-Edit>
+  # or any of:
   export GROQ_API_KEY=gsk_...
   export TOGETHER_API_KEY=...
   export MISTRAL_API_KEY=...
@@ -79,16 +87,30 @@ Required keys:
 @dataclass
 class LLMProvider:
     name: str
-    api_url: str
+    api_url: str                    # may contain {ENV_VAR} placeholders
     default_model: str
     api_key_env: Optional[str]
     needs_key: bool = True
     max_context_chars: int = 60000
     extra_headers: Dict[str, str] = field(default_factory=dict)
     request_style: str = "openai"   # "openai" | "hf_serverless"
+    # Extra env vars (besides the API key) that MUST all be set for this
+    # provider to be used. Values are substituted into api_url.
+    required_env: List[str] = field(default_factory=list)
 
 
 PROVIDERS: List[LLMProvider] = [
+    LLMProvider(
+        name="Cloudflare Workers AI",
+        # Cloudflare's OpenAI-compatible endpoint. Account ID is baked into
+        # the path, so we template it in from CLOUDFLARE_ACCOUNT_ID.
+        api_url="https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions",
+        default_model="@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        api_key_env="CLOUDFLARE_API_TOKEN",
+        needs_key=True,
+        max_context_chars=60000,
+        required_env=["CLOUDFLARE_ACCOUNT_ID"],
+    ),
     LLMProvider(
         name="Groq",
         api_url="https://api.groq.com/openai/v1/chat/completions",
@@ -182,14 +204,28 @@ class FreeLLMReviewer:
             else:
                 key = os.getenv(provider.api_key_env or "", "") or None
 
+            # Providers that need extra env vars (e.g. Cloudflare account id)
+            env_values: Dict[str, str] = {}
+            missing_env = False
+            for var in provider.required_env:
+                val = os.getenv(var, "")
+                if not val:
+                    missing_env = True
+                    break
+                env_values[var] = val
+            if missing_env:
+                continue
+
+            api_url = provider.api_url.format(**env_values) if env_values else provider.api_url
+
             model = self.provider_overrides.get(provider.name, provider.default_model)
             user_content = self._build_prompt(payload, provider.max_context_chars)
 
             try:
                 if provider.request_style == "hf_serverless":
-                    result = self._call_hf_serverless(provider, user_content, key)
+                    result = self._call_hf_serverless(provider, user_content, key, api_url)
                 else:
-                    result = self._call_openai_compat(provider, model, user_content, key)
+                    result = self._call_openai_compat(provider, model, user_content, key, api_url)
 
                 if result:
                     print(f"[llm:{provider.name}] confidence={result.get('confidence', 0):.2f}")
@@ -214,7 +250,9 @@ class FreeLLMReviewer:
         model: str,
         user_content: str,
         api_key: Optional[str],
+        api_url: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
+        url = api_url or provider.api_url
         headers: Dict[str, str] = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -232,7 +270,7 @@ class FreeLLMReviewer:
 
         for attempt in range(self.max_retries + 1):
             resp = requests.post(
-                provider.api_url, headers=headers, json=body, timeout=self.timeout
+                url, headers=headers, json=body, timeout=self.timeout
             )
             if resp.status_code == 429:
                 wait = int(resp.headers.get("retry-after", 15))
@@ -257,6 +295,7 @@ class FreeLLMReviewer:
         provider: LLMProvider,
         user_content: str,
         api_key: Optional[str],
+        api_url: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         HuggingFace serverless inference uses a different request format.
@@ -284,9 +323,10 @@ class FreeLLMReviewer:
             },
         }
 
+        url = api_url or provider.api_url
         for attempt in range(self.max_retries + 1):
             resp = requests.post(
-                provider.api_url, headers=headers, json=body, timeout=self.timeout
+                url, headers=headers, json=body, timeout=self.timeout
             )
             if resp.status_code == 503:
                 # Model is loading — HF returns estimated_time
