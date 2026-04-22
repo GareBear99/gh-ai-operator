@@ -126,3 +126,80 @@ def test_render_markdown_handles_error() -> None:
     )
     assert 'Could not fetch the target' in body
     assert 'clone failed' in body
+
+
+# ---------------------------------------------------------------
+# training_export.py — LLMBuilder bridge
+# ---------------------------------------------------------------
+import training_export  # noqa: E402
+
+
+def test_training_record_schema_matches_llmbuilder_seed() -> None:
+    rec = training_export.build_record(
+        target_url='https://github.com/octocat/Hello-World',
+        focus='Check README',
+        depth='standard',
+        review_markdown='## verdict\nlgtm',
+        confidence=0.8,
+        findings=['no license'],
+        verdict='\ud83d\udfe2 ship',
+    )
+    # Required top-level keys per LLMBuilder's data/critique/seed_examples.jsonl
+    for k in ('id', 'capability', 'domain', 'difficulty', 'input', 'target', 'tags'):
+        assert k in rec, f'missing required key: {k}'
+    assert rec['capability'] == 'critique'
+    assert rec['domain'] == 'code'
+    assert rec['difficulty'] in {'easy', 'medium', 'hard'}
+    assert 'task' in rec['input']
+    assert 'analysis' in rec['target']
+    assert 'confidence' in rec['target']
+    assert 0.0 <= rec['target']['confidence'] <= 1.0
+    assert 'arc-operator' in rec['tags']
+    assert 'live-deployment' in rec['tags']
+    assert rec['id'].startswith('arc-operator-')
+    assert rec['provenance']['source'].endswith('gh-ai-operator')
+
+
+def test_training_depth_maps_to_difficulty() -> None:
+    easy   = training_export.build_record('https://github.com/x/y', '', 'quick',    'r', 0.5, [], 'v')
+    medium = training_export.build_record('https://github.com/x/y', '', 'standard', 'r', 0.5, [], 'v')
+    hard   = training_export.build_record('https://github.com/x/y', '', 'deep',     'r', 0.5, [], 'v')
+    unknown= training_export.build_record('https://github.com/x/y', '', 'whatever', 'r', 0.5, [], 'v')
+    assert easy['difficulty']   == 'easy'
+    assert medium['difficulty'] == 'medium'
+    assert hard['difficulty']   == 'hard'
+    assert unknown['difficulty']== 'medium'
+
+
+def test_training_confidence_is_clamped() -> None:
+    low  = training_export.build_record('https://github.com/x/y', '', 'standard', 'r', -1.0, [], 'v')
+    high = training_export.build_record('https://github.com/x/y', '', 'standard', 'r',  9.0, [], 'v')
+    assert low['target']['confidence']  == 0.0
+    assert high['target']['confidence'] == 1.0
+
+
+def test_training_correction_lane_tags(tmp_path) -> None:
+    # export_correction should append a JSONL row tagged 'correction'.
+    out = training_export.export_correction(
+        target_url='https://github.com/x/y',
+        focus='human override',
+        depth='deep',
+        correction_markdown='The earlier verdict missed the race condition in thread.py.',
+        base_dir=str(tmp_path),
+    )
+    assert out.exists()
+    import json as _json
+    lines = [line for line in out.read_text(encoding='utf-8').splitlines() if line.strip()]
+    assert len(lines) == 1
+    rec = _json.loads(lines[0])
+    assert 'correction' in rec['tags']
+    assert 'human-follow-up' in rec['tags']
+    assert rec['id'].endswith('-correction')
+    assert rec['target']['verdict'] == 'correction'
+
+
+def test_training_analysis_is_truncated_if_huge() -> None:
+    big = 'x' * 10000
+    rec = training_export.build_record('https://github.com/x/y', '', 'standard', big, 0.5, [], 'v')
+    assert len(rec['target']['analysis']) <= 4050
+    assert '[truncated]' in rec['target']['analysis']

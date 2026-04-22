@@ -112,3 +112,14 @@ jobs:
           name: ai-review
           path: github_ai_operator/output/target_review/*.md
           if-no-files-found: warn
+
+      - name: Upload LLMBuilder training export
+        uses: actions/upload-artifact@v4
+        with:
+          # ARC-Neuron-LLMBuilder's ingest script consumes this artifact.
+          # Contains one JSONL line per live review in the seed-examples
+          # schema LLMBuilder expects at data/<capability>/seed_examples.jsonl.
+          name: llmbuilder-training-export
+          path: github_ai_operator/output/training_export/**
+          if-no-files-found: warn
+          retention-days: 90

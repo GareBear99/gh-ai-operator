@@ -31,6 +31,7 @@ from github_ai_operator.config import Limits  # noqa: E402
 from github_ai_operator.review import (
     clone_repo, collect_snapshot, heuristic_findings, safe_delete,
 )
+import training_export  # noqa: E402
 
 
 REPO_URL_RE = re.compile(
@@ -218,6 +219,39 @@ def main() -> int:
     out_path = out_dir / f'{slug}.md'
     out_path.write_text(body, encoding='utf-8')
     print(f'[wrote] {out_path}')
+
+    # ----- LLMBuilder training export -----
+    # Every live review becomes a supervised training example for
+    # ARC-Neuron-LLMBuilder. Always on; opt out with EMIT_TRAINING_DATA=0.
+    if os.environ.get('EMIT_TRAINING_DATA', '1') != '0':
+        snap = (review or {}).get('snapshot', {}) or {}
+        findings = (review or {}).get('findings', []) or []
+        # Pull a coarse verdict string by running the same helper.
+        verdict = _derive_verdict(findings, snap) if 'snapshot' in (review or {}) else 'unable-to-evaluate'
+        # Confidence heuristic: fewer findings = higher confidence.
+        n = len(findings)
+        if 'error' in (review or {}):
+            confidence = 0.2
+        elif n == 0:
+            confidence = 0.85
+        elif n <= 2:
+            confidence = 0.7
+        else:
+            confidence = 0.55
+        try:
+            jsonl = training_export.export_from_review(
+                target_url=target.get('url', ''),
+                focus=context.get('focus', ''),
+                depth=context.get('depth', ''),
+                review_markdown=body,
+                confidence=confidence,
+                findings=findings,
+                verdict=verdict,
+            )
+            print(f'[training] appended training example -> {jsonl}')
+        except Exception as exc:
+            # Never fail a review because training export hiccuped.
+            print(f'[training-warn] could not emit training data: {exc}')
 
     if args.portfolio_issue:
         ok = post_to_portfolio_issue(args.portfolio_issue, body)
