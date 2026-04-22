@@ -17,6 +17,32 @@ The operator ships two entry points:
 | `scout.py` | Seed-driven discovery of related public repos + batch review + draft/approval-queue issue output. |
 | `review_target.py` | **Single-URL review.** Called by the Portfolio's code-review dispatch workflow. Takes one GitHub URL, posts a pre-review verdict back to the originating issue. |
 | `cloudflare/worker.js` | **HTTPS front-end** deployed to Cloudflare Workers. Anyone can `POST /review` with a JSON body and the Worker fires `repository_dispatch` at this repo. See [`cloudflare/README.md`](cloudflare/README.md). |
+| `training_export.py` | Emits every live review as an LLMBuilder-compatible seed-examples JSONL record. Runs automatically at the end of each review; opt out with `EMIT_TRAINING_DATA=0`. |
+
+## 🧠 Continuous-learning worker for ARC-Neuron-LLMBuilder
+
+This operator is **not just an AI helper — it's the live-deployment training signal generator for [ARC-Neuron-LLMBuilder](https://github.com/GareBear99/ARC-Neuron-LLMBuilder)**. Every production review is emitted as a supervised training example in LLMBuilder's seed-examples schema and uploaded as the `llmbuilder-training-export` artifact (90-day retention). LLMBuilder's nightly workflow pulls those artifacts and grows its `critique` corpus automatically.
+
+```mermaid
+flowchart LR
+    P["Portfolio<br/>code-review issue"] --> OP["this repo<br/>review_target.py"]
+    OP -- "verdict comment" --> P
+    OP -- "training_export.py<br/>seed-examples JSONL" --> A["llmbuilder-training-export<br/>artifact"]
+    A --> LB["ARC-Neuron-LLMBuilder<br/>ingest-operator-reviews.yml (daily)"]
+    LB --> C["data/critique/operator_reviews.jsonl"]
+    C --> GATE["next Gate v2 candidate"]
+    P -. follow-up .-> COR["export_correction<br/>tag: correction"]
+    COR --> A
+    style OP fill:#0366d6,stroke:#fff,color:#fff
+    style LB fill:#7057ff,stroke:#fff,color:#fff
+```
+
+- **Schema**: `id / capability=critique / domain=code / difficulty / input.task / target.{analysis,confidence,verdict,findings} / tags / provenance` — matches LLMBuilder's existing `data/critique/seed_examples.jsonl` exactly, no glue code.
+- **Correction lane**: a Portfolio Follow-up issue emits a second record tagged `correction + human-follow-up`; LLMBuilder's ingest bumps its confidence by `+0.05` so Gate v2 training weights human overrides higher than the baseline stream.
+- **Provenance**: every record carries `provenance.source`, `provenance.emitted_at`, `provenance.target_url`. The critique corpus is fully auditable.
+- **Separate shard**: ingested data lands in `data/critique/operator_reviews.jsonl`, not the curated `seed_examples.jsonl`. Promotion to the canonical seed file stays a human decision.
+
+Full pipeline: [ARC-Neuron-LLMBuilder/docs/LIVE_DEPLOYMENT_LEARNING.md](https://github.com/GareBear99/ARC-Neuron-LLMBuilder/blob/main/docs/LIVE_DEPLOYMENT_LEARNING.md).
 
 ## ☁️ Runs fully on Cloudflare's free tier
 
@@ -165,8 +191,9 @@ It does **not** run CI, execute tests inside target repos, or guarantee correctn
 
 ## Related ARC repos
 
-- [ARC-Core](https://github.com/GareBear99/ARC-Core) — event + receipt spine.
-- [Portfolio](https://github.com/GareBear99/Portfolio) — the consumer of this operator's pre-review flow.
+- [ARC-Core](https://github.com/GareBear99/ARC-Core) — event + receipt spine. Every operator run is an ARC-Core-shaped event; every verdict is a receipt.
+- [ARC-Neuron-LLMBuilder](https://github.com/GareBear99/ARC-Neuron-LLMBuilder) — the learner this operator feeds. Live reviews become supervised training data for the next Gate v2 candidate (see the continuous-learning section above).
+- [Portfolio](https://github.com/GareBear99/Portfolio) — the intake surface. Four issue templates dispatch code-review requests to this operator via `repository_dispatch`.
 - [omnibinary-runtime](https://github.com/GareBear99/omnibinary-runtime) + [Arc-RAR](https://github.com/GareBear99/Arc-RAR) — any-OS portability.
 
 ## License
