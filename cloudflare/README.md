@@ -50,22 +50,36 @@ https://arc-ai-operator.<your-subdomain>.workers.dev
 
 Anyone (your Portfolio, VALLIS_Liquidity hub, ADMENSION, a CLI, a `curl` from the command line) can POST a review request here and the Worker will fire `repository_dispatch` on `gh-ai-operator`, which runs the review and comments the verdict back on the Portfolio issue.
 
-### Deploy
+### Deploy — bootstrap script (recommended)
 
 ```bash
-# one-time
-npm install -g wrangler   # or: npx wrangler ...
-wrangler login            # browser flow, logs you into your Cloudflare account
+cd cloudflare
+# one-time: wrangler login opens a browser OAuth flow
+npx wrangler login
 
+# then run the bootstrap; it auto-detects the account id, asks for the
+# API token + dispatch PAT, sets every secret, deploys the worker, and
+# smoke-tests both GET / and POST /review.
+bash bootstrap.sh
+```
+
+The script is idempotent. Run it again after rotating any secret.
+
+### Deploy — manual
+
+If you'd rather drive it by hand:
+
+```bash
+npx wrangler login            # browser flow
 cd cloudflare
 
 # required secret — PAT with Actions: read+write on gh-ai-operator
-wrangler secret put GITHUB_DISPATCH_TOKEN
+npx wrangler secret put GITHUB_DISPATCH_TOKEN
 
 # optional shared secret callers must present in x-arc-token
-wrangler secret put WORKER_SHARED_SECRET
+npx wrangler secret put WORKER_SHARED_SECRET
 
-wrangler deploy
+npx wrangler deploy
 ```
 
 ### Call it
