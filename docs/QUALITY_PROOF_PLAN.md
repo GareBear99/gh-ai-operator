@@ -2,10 +2,10 @@
 
 This document describes how the ARC GitHub AI Operator proves that it works
 end-to-end with the Portfolio (as a real AI helper in production) **and** that
-the data it emits actually makes ARC-Neuron-LLMBuilder better. It is written
-in the style of a DARPA acceptance plan: explicit phases, measurable criteria,
-adversarial thinking, and an A/B protocol that rejects unsubstantiated "it
-works" claims.
+the data it emits actually makes ARC-Neuron-LLMBuilder better. It follows a
+professional staged-validation format: explicit phases, measurable acceptance
+criteria, an adversarial threat model, and an A/B protocol designed to reject
+unsubstantiated "it works" claims.
 
 ## 0. System under test
 

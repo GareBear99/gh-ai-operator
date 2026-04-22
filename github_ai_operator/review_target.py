@@ -31,6 +31,7 @@ from github_ai_operator.config import Limits  # noqa: E402
 from github_ai_operator.review import (
     clone_repo, collect_snapshot, heuristic_findings, safe_delete,
 )
+from github_ai_operator import review_rules  # noqa: E402
 import training_export  # noqa: E402
 
 
@@ -54,7 +55,7 @@ def parse_target(url: str) -> dict:
     return {
         'kind': kind,
         'owner': d['owner'],
-        'repo': d['repo'].rstrip('.git'),
+        'repo': (d['repo'][:-4] if d['repo'].endswith('.git') else d['repo']),
         'pr': int(d['pr']) if d.get('pr') else None,
         'ref': d.get('ref'),
         'url': url,
@@ -73,8 +74,19 @@ def review_repo_snapshot(owner: str, repo: str, ref: str | None) -> dict:
             subprocess.run(['git', '-C', str(dest), 'checkout', '--quiet', ref],
                            capture_output=True, text=True, check=False)
         snapshot = collect_snapshot(dest, limits)
-        findings = heuristic_findings(dest, snapshot)
-        return {'snapshot': snapshot, 'findings': findings}
+        base = heuristic_findings(dest, snapshot)
+        extra, langs = review_rules.run_all(dest, snapshot)
+        return {
+            'snapshot':  snapshot,
+            'findings':  base + extra,
+            'languages': langs,
+            'rule_packs_fired': {
+                'python':  any(f.startswith('[python]')  for f in extra),
+                'juce':    any(f.startswith('[juce]')    for f in extra),
+                'node':    any(f.startswith('[node]')    for f in extra),
+                'finance': any(f.startswith('[finance]') for f in extra),
+            },
+        }
 
 
 def render_markdown(target: dict, review: dict, context: dict) -> str:
@@ -130,6 +142,22 @@ def render_markdown(target: dict, review: dict, context: dict) -> str:
             lines.append('- No surface-level issues detected by the heuristic pass.')
         lines.append('')
 
+        # Rule-pack activation (transparency about which detectors ran)
+        packs = review.get('rule_packs_fired', {}) or {}
+        langs = review.get('languages', []) or []
+        activated = [k for k, v in packs.items() if v]
+        lines.append('### Rule packs run')
+        lines.append(f'- Languages detected: {", ".join(f"`{l}`" for l in langs) if langs else "(none)"}')
+        lines.append(f'- Packs that produced findings: {", ".join(f"`{p}`" for p in activated) if activated else "(none fired)"}')
+        lines.append('')
+
+        # Honest 'Thoughts' section — explicit about what the heuristic alone can't do.
+        lines.append('### Thoughts (honest confidence)')
+        thoughts = _build_thoughts(snap, findings, packs, context.get("depth", ""))
+        for t in thoughts:
+            lines.append(f'- {t}')
+        lines.append('')
+
     lines.append('---')
     lines.append('')
     lines.append(
@@ -140,6 +168,38 @@ def render_markdown(target: dict, review: dict, context: dict) -> str:
         'if you want a deeper human round._'
     )
     return '\n'.join(lines) + '\n'
+
+
+def _build_thoughts(snap: dict, findings: list, packs: dict, depth: str) -> list:
+    """Explicit honesty layer. The operator states what this pass can and
+    cannot tell you, so readers do not over-weight a heuristic review."""
+    out: list = []
+    n = len(findings)
+    fc = snap.get('file_count', 0)
+    # Ceiling honesty
+    any_ai = False  # heuristic-only for now; AI-backed review will flip this
+    if any_ai:
+        out.append('LLM-layered review ran on top of the heuristic pass.')
+    else:
+        out.append('This was a **heuristic-only** pass. No LLM ran over the source; '
+                   'semantic correctness, algorithmic safety, and idiomatic style were not evaluated.')
+    # What we actually looked at
+    out.append(f'Snapshot covered **{fc}** files (depth `{depth or "standard"}`, `--depth 1` git clone). Vendored '
+               'trees and build artefacts were skipped via `IGNORED_DIRS`; your repo may have more surface area than this number.')
+    # What each pack contributes, if it did
+    if packs.get('python'):
+        out.append('Python rule pack fired. Bare-except, mutable-default-args, `sys.path` hacks, and timeout-less `requests` calls are surface anti-patterns, not proofs — confirm each one in context before acting.')
+    if packs.get('juce'):
+        out.append('JUCE rule pack fired. Flagged patterns inside `processBlock` are **real-time-safety smells** — the regex cannot prove they are on the audio thread at runtime, but a human audio engineer should review each one.')
+    if packs.get('node'):
+        out.append('Node rule pack fired. Lockfile / engines / test-script checks are hygiene-level; none of them are correctness claims.')
+    if packs.get('finance'):
+        out.append('Finance rule pack fired. Missing kill-switch / non-paper-default signals are production-readiness concerns for live trading bots, not code defects.')
+    if n == 0:
+        out.append('Zero findings on a well-formed repo is a genuine signal of hygiene; on a sparse repo it can also mean "not enough sampled source". Both are possible.')
+    # What a follow-up round would add
+    out.append('A follow-up round with LLM backing (Cloudflare Workers AI) will layer: idiomatic-style feedback, algorithmic soundness checks, test-coverage inference, and named-risk suggestions. That round is available when the CF credentials are set on the operator workflow.')
+    return out
 
 
 def _derive_verdict(findings: list, snapshot: dict) -> str:
