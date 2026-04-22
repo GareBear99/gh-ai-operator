@@ -1,199 +1,165 @@
-# GitHub AI Operator
+# ARC GitHub AI Operator
 
-Evidence-first GitHub scout and review operator for **discovering related repositories, generating review reports, and queueing high-confidence issue drafts**.
+[![CI](https://github.com/GareBear99/gh-ai-operator/actions/workflows/ci.yml/badge.svg)](https://github.com/GareBear99/gh-ai-operator/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![Built for ARC-Core](https://img.shields.io/badge/built%20for-ARC--Core-5B6CFF)](https://github.com/GareBear99/ARC-Core)
 
-This build is designed to be **safer than a naive autonomous poster**:
-- draft-first by default
-- approval queue support
-- cooldown history
-- per-run and per-day caps
-- duplicate checks against **open and closed** issues
-- evidence gate before live posting
+> **Evidence-first GitHub scout + single-target code reviewer** for the ARC
+> ecosystem. Discovers related repositories, clones them one at a time,
+> collects a structural snapshot, runs an AI (or heuristic) review, and either
+> writes a local report or posts a verdict comment back to the Portfolio.
 
-## What it does
+The operator ships two entry points:
 
-1. Reads one or more seed repositories.
-2. Builds related GitHub search queries from metadata, topics, README text, and sampled source signals.
-3. Searches public repositories via the GitHub API.
-4. Clones one candidate at a time into a temp workspace.
-5. Collects a lightweight structural snapshot.
-6. Runs one of these review layers:
-   - Anthropic / Claude
-   - Free / OpenAI-compatible providers
-   - heuristic fallback
-7. Saves JSON + Markdown reports locally.
-8. Optionally queues or posts a high-confidence issue.
-9. Deletes the clone and moves on.
+| Entry point | What it does |
+|---|---|
+| `scout.py` | Seed-driven discovery of related public repos + batch review + draft/approval-queue issue output. |
+| `review_target.py` | **Single-URL review.** Called by the Portfolio's code-review dispatch workflow. Takes one GitHub URL, posts a pre-review verdict back to the originating issue. |
 
 ## Safety posture
 
 Default posture is safe:
 - `posting.enabled = false`
 - `posting.draft_only = true`
+- confidence threshold + evidence gate + allowlist / denylist + duplicate-title / body checks + cooldown history + per-run and per-day caps.
 
-That means the operator will still scout, review, and write reports, but it will **not** mutate target repositories unless you explicitly enable live posting.
+The single-target `review_target.py` never auto-creates new issues anywhere; it only **comments** on the specific Portfolio issue you pass to it.
 
-Live posting is additionally protected by:
-- confidence threshold
-- evidence gate
-- allowlist / denylist
-- duplicate-title and duplicate-body checks
-- cooldown history
-- issue caps
+## How the Portfolio dispatch flow works
 
-## Current strengths
-
-- related repo discovery from your own repos
-- report generation with Markdown + JSON output
-- approval queue bundles for manual review
-- contribution-file awareness
-- duplicate checks across open and closed issues
-- label-safe posting
-- review-layer fallback stack
-
-## Current limits
-
-This is **not** a full semantic code auditor yet.
-It currently works best as a:
-- scout
-- triage assistant
-- issue-draft generator
-- manual-review accelerator
-
-It does **not** run full CI, execute tests inside target repos, or guarantee that an AI-generated review is correct.
-
-## Project layout
-
-```text
-github_ai_operator/
-├── github_ai_operator/
-│   ├── __init__.py
-│   ├── ai_client.py
-│   ├── anthropic_client.py
-│   ├── config.py
-│   ├── delay.py
-│   ├── engine.py
-│   ├── free_llm_client.py
-│   ├── github_api.py
-│   ├── issue_writer.py
-│   ├── models.py
-│   ├── review.py
-│   └── similarity.py
-├── config.example.json
-├── README.md
-├── requirements.txt
-└── scout.py
+```mermaid
+flowchart LR
+    A["User opens Code-Review<br/>issue on Portfolio"] --> B["Portfolio workflow<br/>.github/workflows/ai-pre-review.yml"]
+    B -- "repository_dispatch<br/>code-review-request" --> C["gh-ai-operator workflow<br/>.github/workflows/ai-review-dispatch.yml"]
+    C --> D["review_target.py<br/>clone + snapshot + heuristic + optional AI"]
+    D --> E["gh issue comment<br/>→ Portfolio issue"]
+    E --> F["User reads verdict · optionally opens Follow-up"]
 ```
 
-## Requirements
+The workflow also runs standalone via **workflow_dispatch** — trigger it manually from the Actions tab with a `target_url` + optional `portfolio_issue`.
 
-- Python 3.10+
-- `git`
-- a GitHub token in `GITHUB_TOKEN`
-
-Optional:
-- `ANTHROPIC_API_KEY`
-- provider-specific AI keys if you want richer review generation
-
-## Setup
+## Install
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ./github_ai_operator[dev]
+export GITHUB_TOKEN="$(gh auth token)"
+```
+
+This exposes two console scripts:
+
+- `arc-operator-scout`  — seed-driven discovery.
+- `arc-operator-review` — single-target review.
+
+## Quickstart: single-target review
+
+```bash
+arc-operator-review \
+  --target https://github.com/octocat/Hello-World \
+  --review-type "Full repo review" \
+  --depth standard \
+  --focus "Check README, license, and tests"
+```
+
+Writes `github_ai_operator/output/target_review/<slug>.md`.
+
+Pass `--portfolio-issue GareBear99/Portfolio#123` to also **comment the review on that issue** (requires a token with `issues:write` on the Portfolio repo).
+
+## Quickstart: scout mode
+
+```bash
+cd github_ai_operator
 cp config.example.json config.json
-export GITHUB_TOKEN="YOUR_FINE_GRAINED_PAT"
+python scout.py --config config.json --print-queries --dry-run
+python scout.py --config config.json    # draft mode
 ```
 
-## Quick start
+## Configuration
 
-Print generated queries:
+See `github_ai_operator/config.example.json`. Key sections:
+
+- `seed_repos` — which repos to learn keywords from.
+- `search` — `mode: related | custom | hybrid`, `min_stars`, `languages`, `required_topics`, `pushed_after`.
+- `limits` — `max_repos_per_run`, `max_issue_posts_per_day`, `min_similarity_score`, `min_issue_confidence`, `repost_cooldown_days`, `duplicate_title_overlap_threshold`.
+- `posting` — `enabled`, `draft_only`, `require_manual_approval`, `allowlist`, `denylist`, `labels`.
+- `ai` — optional LLM backend (`api_url`, `api_key_env`, `model`). Falls back to heuristic review if no AI is configured.
+
+## Tests
 
 ```bash
-python scout.py --config config.json --print-queries
+cd github_ai_operator
+pip install pytest
+python -m pytest tests/ -q
 ```
 
-Run safely in draft mode:
+Tests cover the parts the Portfolio dispatch flow depends on: config loading, URL parsing, verdict derivation, markdown rendering.
 
-```bash
-python scout.py --config config.json
-```
+## GitHub Actions workflows
 
-Dry run only:
+- **`.github/workflows/ci.yml`** — runs pytest on every push / PR across Python 3.10 / 3.11 / 3.12, plus a smoke dry-run of the scout.
+- **`.github/workflows/ai-review-dispatch.yml`** — listens for `repository_dispatch` of type `code-review-request` from the Portfolio, runs the single-target review, and comments the verdict back on the originating Portfolio issue. Also exposed as a `workflow_dispatch` so it can be triggered manually from the Actions tab.
 
-```bash
-python scout.py --config config.json --dry-run
-```
+### Required secret for cross-repo commenting
 
-## Output
+To post reviews back to Portfolio issues, set a PAT with `issues:write` on `GareBear99/Portfolio` as the **`PORTFOLIO_WRITE_TOKEN`** secret in this repo (Settings → Secrets and variables → Actions). The workflow prefers it over the built-in `GITHUB_TOKEN`, which is scoped to this repo only.
+
+## Project layout
 
 ```text
-output/
-  owner__repo.json
-  owner__repo.md
-  index.json
-  run_summary.json
-  daily_state.json
-  repo_history.json
-  approval_queue/
-    owner__repo.json
-    owner__repo.md
+gh-ai-operator/
+├── .github/
+│   ├── FUNDING.yml
+│   └── workflows/
+│       ├── ci.yml
+│       └── ai-review-dispatch.yml
+└── github_ai_operator/
+    ├── github_ai_operator/
+    │   ├── __init__.py
+    │   ├── ai_client.py
+    │   ├── anthropic_client.py
+    │   ├── config.py
+    │   ├── delay.py
+    │   ├── engine.py
+    │   ├── free_llm_client.py
+    │   ├── github_api.py
+    │   ├── issue_writer.py
+    │   ├── models.py
+    │   ├── review.py
+    │   └── similarity.py
+    ├── tests/
+    │   └── test_basic.py
+    ├── config.example.json
+    ├── pyproject.toml
+    ├── requirements.txt
+    ├── review_target.py
+    └── scout.py
 ```
 
-## Recommended usage pattern
+## Current limits
 
-### Mode A — Scout only
-Use this to discover related repositories and generate reports.
+This is **not** a full semantic code auditor. It works best as:
 
-```json
-"posting": {
-  "enabled": false,
-  "draft_only": true
-}
-```
+- a scout,
+- a triage assistant,
+- a first-pass reviewer on a URL,
+- a manual-review accelerator.
 
-### Mode B — Approval queue
-Use this when you want strong drafts but still want a human gate.
+It does **not** run CI, execute tests inside target repos, or guarantee correctness of AI-generated review text. Use it as a pre-review gate, not a human replacement.
 
-```json
-"posting": {
-  "enabled": true,
-  "draft_only": false,
-  "require_manual_approval": true,
-  "allowlist": ["owner/repo"]
-}
-```
+## 💖 Support
 
-### Mode C — Live posting
-Only use this once you have tuned thresholds and are confident in the evidence quality.
+- [GitHub Sponsors](https://github.com/sponsors/GareBear99)
+- [Buy Me a Coffee](https://www.buymeacoffee.com/garebear99)
+- [Ko-fi](https://ko-fi.com/garebear99)
 
-```json
-"posting": {
-  "enabled": true,
-  "draft_only": false,
-  "allowlist": ["owner/repo"]
-}
-```
+## Related ARC repos
 
-## Best practices
-
-- keep volume low
-- keep relevance high
-- verify reports before posting live
-- prefer allowlists over broad posting
-- use the approval queue first
-- treat heuristic-only reviews as drafts, not final judgment
-
-## What changed in this hardened version
-
-- fixed packaging layout
-- added approval queue bundles
-- improved duplicate detection
-- checks open + closed issues
-- evidence gate before live posting
-- stronger snapshot extraction with symbol samples
-- safer run/report flow
+- [ARC-Core](https://github.com/GareBear99/ARC-Core) — event + receipt spine.
+- [Portfolio](https://github.com/GareBear99/Portfolio) — the consumer of this operator's pre-review flow.
+- [omnibinary-runtime](https://github.com/GareBear99/omnibinary-runtime) + [Arc-RAR](https://github.com/GareBear99/Arc-RAR) — any-OS portability.
 
 ## License
 
-MIT
+MIT — see the project LICENSE file.

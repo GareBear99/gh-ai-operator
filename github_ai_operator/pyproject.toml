@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arc-github-ai-operator"
+version = "0.2.0"
+description = "Evidence-first GitHub scout + single-target code reviewer for the ARC ecosystem."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Gary Doman" }]
+keywords = [
+    "github", "code-review", "ai", "scout", "operator",
+    "arc-core", "arc-ecosystem",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+dotenv = ["python-dotenv>=1.0.0"]
+
+[project.urls]
+Homepage    = "https://github.com/GareBear99/gh-ai-operator"
+"Bug Tracker" = "https://github.com/GareBear99/gh-ai-operator/issues"
+"ARC-Core"  = "https://github.com/GareBear99/ARC-Core"
+Portfolio   = "https://garebear99.github.io/Portfolio/"
+
+[project.scripts]
+arc-operator-scout   = "scout:main"
+arc-operator-review  = "review_target:main"
+
+[tool.setuptools]
+py-modules = ["scout", "review_target"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["github_ai_operator*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
