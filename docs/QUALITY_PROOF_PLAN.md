@@ -63,7 +63,10 @@ cd github_ai_operator && python review_target.py \
 
 **Status**: committed together with this doc. See the workflow file.
 
-### Phase 2 — Portfolio dispatch live
+### Phase 2 — Portfolio / Worker dispatch live
+
+**Status update (2026-04-22)**: the **dispatch hop** is proven. Cloudflare Worker at `https://arc-ai-operator.admension.workers.dev` returns HTTP 202 on authed POST, GitHub accepts `repository_dispatch`, and `ai-review-dispatch.yml` run `24807014943` was triggered. Same pattern on Portfolio issue #1's workflow. The runner does not start because of a GitHub Actions billing hold on `GareBear99` — tracked as sub-phase 2a below.
+
 **Claim**: a new Code-review issue on the Portfolio triggers a review in this repo within 60 s.
 
 **Test**: manually open a Code-review issue on the Portfolio with `target_url = https://github.com/octocat/Hello-World`, then observe:

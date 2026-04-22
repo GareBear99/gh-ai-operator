@@ -93,10 +93,30 @@ $ python scripts/ingest_operator_reviews.py --strict
 |---|---|---|
 | 0 | Operator produces valid markdown + LLMBuilder-schema JSONL | **PROVED on FreeEQ8** (this doc) |
 | 1 | Round-trip CI enforces the contract | **PROVED AUTOMATICALLY** via `.github/workflows/loop-integration.yml` |
-| 2 | Portfolio dispatch fires when an issue opens | Portfolio issue #1 opened 2026-04-22; Portfolio workflow **queued** but held by a GitHub Actions billing hold on the account. Blocker is non-code. |
-| 3 | Verdict posts back on the originating issue | Pending Phase 2 unblock + `PORTFOLIO_WRITE_TOKEN`. |
-| 4 | LLMBuilder ingests the live run | Pending Phase 2–3 + `OPERATOR_READ_TOKEN`. |
+| 2 | Portfolio / Worker dispatch fires an operator run | **DISPATCH HOP PROVED**. Cloudflare Worker deployed at `https://arc-ai-operator.admension.workers.dev` (Version `565157a2-c2c4-4c5d-8ea9-54f8c5039a02`); POST `/review` returns HTTP 202; GitHub accepts `repository_dispatch` and the operator workflow is triggered. Portfolio issue #1 workflow run `24805560057` + Worker-dispatched run `24807014943` both trigger the operator within seconds. |
+| 2a | Operator workflow actually executes | **HELD** by GitHub Actions billing on `GareBear99`. Annotation: "The job was not started because your account is locked due to a billing issue." Non-code blocker. |
+| 3 | Verdict posts back on the originating issue | Pending Phase 2a unblock. `PORTFOLIO_WRITE_TOKEN` secret is set (bootstrap). |
+| 4 | LLMBuilder ingests the live run | Pending Phase 2a–3. `OPERATOR_READ_TOKEN` secret is set (bootstrap). |
 | 5 | A/B proof of learning (critique slice) | Pending ≥ 50 ingested records. |
+
+## Live deployment progress — session 2 (2026-04-22)
+
+- **Cloudflare Worker deployed**: `https://arc-ai-operator.admension.workers.dev` (deploy size 4.47 KiB / gzip 1.71 KiB; latest Version `565157a2-c2c4-4c5d-8ea9-54f8c5039a02`).
+- **GET /** returns the JSON service card.
+- **CORS preflight** from `https://garebear99.github.io` returns HTTP 204 with `access-control-allow-origin` correctly set.
+- **Unauthed POST /review** returns HTTP 401 (`invalid or missing x-arc-token`).
+- **Authed POST /review** returns HTTP 202; GitHub accepts the `repository_dispatch`. Operator run `24807014943` triggered; blocked by billing hold.
+- **Workers AI probe** successful: `@cf/meta/llama-3.3-70b-instruct-fp8-fast` replied `{"content":"ok"}` (200 OK).
+- **Static front-end deployed**: `https://garebear99.github.io/Portfolio/review.html` — Pages-hosted form POSTing to the Worker.
+- **Cross-repo secrets set** (bootstrap): `CLOUDFLARE_ACCOUNT_ID`, `PORTFOLIO_WRITE_TOKEN` on gh-ai-operator; `CLOUDFLARE_ACCOUNT_ID`, `AI_OPERATOR_DISPATCH_TOKEN` on Portfolio; `OPERATOR_READ_TOKEN` on ARC-Neuron-LLMBuilder. Worker secrets: `GITHUB_DISPATCH_TOKEN`, `WORKER_SHARED_SECRET`.
+
+## Critical path
+
+The single change that unblocks Phases 2a, 3, and 4 is:
+
+> **Clear the GitHub Actions billing hold on the `GareBear99` account.**
+
+Every downstream hop is already wired up, verified in isolation, and logged. The workflows are queued waiting for the runner to start.
 
 ## Activation checklist (unchanged from QUALITY_PROOF_PLAN §5)
 
