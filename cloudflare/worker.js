@@ -29,8 +29,29 @@ const DISPATCH_EVENT = 'code-review-request';
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
 
-function jsonResponse(status, body) {
-  return new Response(JSON.stringify(body, null, 2), { status, headers: JSON_HEADERS });
+// CORS allowlist — Portfolio Pages front-end + localhost for dev.
+const CORS_ALLOWED_ORIGINS = new Set([
+  'https://garebear99.github.io',
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+]);
+
+function corsHeaders(request) {
+  const origin = request.headers.get('origin') || '';
+  const allowed = CORS_ALLOWED_ORIGINS.has(origin) ? origin : '';
+  return {
+    'access-control-allow-origin':  allowed,
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'content-type, x-arc-token',
+    'access-control-max-age':       '86400',
+    'vary':                         'origin',
+  };
+}
+
+function jsonResponse(status, body, request = null) {
+  const headers = { ...JSON_HEADERS };
+  if (request) Object.assign(headers, corsHeaders(request));
+  return new Response(JSON.stringify(body, null, 2), { status, headers });
 }
 
 function isGitHubUrl(u) {
@@ -48,21 +69,24 @@ function isPortfolioIssueRef(s) {
 }
 
 async function handleReview(request, env) {
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders(request) });
+  }
   if (request.method !== 'POST') {
-    return jsonResponse(405, { error: 'use POST /review with a JSON body' });
+    return jsonResponse(405, { error: 'use POST /review with a JSON body' }, request);
   }
   let payload;
   try {
     payload = await request.json();
   } catch (_) {
-    return jsonResponse(400, { error: 'body must be valid JSON' });
+    return jsonResponse(400, { error: 'body must be valid JSON' }, request);
   }
 
   // Optional shared secret
   if (env.WORKER_SHARED_SECRET) {
     const provided = payload.token || request.headers.get('x-arc-token');
     if (provided !== env.WORKER_SHARED_SECRET) {
-      return jsonResponse(401, { error: 'invalid or missing x-arc-token / body.token' });
+      return jsonResponse(401, { error: 'invalid or missing x-arc-token / body.token' }, request);
     }
   }
 
@@ -70,20 +94,20 @@ async function handleReview(request, env) {
   if (!target_url || !isGitHubUrl(target_url)) {
     return jsonResponse(400, {
       error: 'target_url is required and must be a github.com or gist.github.com URL',
-    });
+    }, request);
   }
 
   const portfolio_issue = (payload.portfolio_issue || '').trim();
   if (portfolio_issue && !isPortfolioIssueRef(portfolio_issue)) {
     return jsonResponse(400, {
       error: 'portfolio_issue must look like "owner/repo#NN"',
-    });
+    }, request);
   }
 
   if (!env.GITHUB_DISPATCH_TOKEN) {
     return jsonResponse(500, {
       error: 'GITHUB_DISPATCH_TOKEN is not configured on the worker',
-    });
+    }, request);
   }
 
   const client_payload = {
@@ -122,7 +146,7 @@ async function handleReview(request, env) {
           ? `https://github.com/${portfolio_issue.replace('#', '/issues/')}`
           : null,
       ].filter(Boolean),
-    });
+    }, request);
   }
 
   const errText = await gh.text().catch(() => '');
@@ -130,10 +154,10 @@ async function handleReview(request, env) {
     error:       'repository_dispatch call failed',
     github_status: gh.status,
     github_body: errText.slice(0, 400),
-  });
+  }, request);
 }
 
-function handleRoot() {
+function handleRoot(request) {
   return jsonResponse(200, {
     service: 'arc-ai-operator-worker',
     version: '0.1.0',
@@ -150,14 +174,18 @@ function handleRoot() {
       focus:           'free-text',
     },
     auth: 'x-arc-token or body.token  (only required when WORKER_SHARED_SECRET is set)',
-  });
+    frontend: 'https://garebear99.github.io/Portfolio/review.html',
+  }, request);
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === '/' || url.pathname === '') return handleRoot();
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: corsHeaders(request) });
+    }
+    if (url.pathname === '/' || url.pathname === '') return handleRoot(request);
     if (url.pathname === '/review') return handleReview(request, env);
-    return jsonResponse(404, { error: `no route for ${url.pathname}` });
+    return jsonResponse(404, { error: `no route for ${url.pathname}` }, request);
   },
 };
